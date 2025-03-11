@@ -1,5 +1,6 @@
 use clap::{Arg, Args, Command, Parser};
-use dish_controller::DishController;
+use dish_controller::{DishSerialController, DishState};
+use dish_driver::DishResponse;
 use log::{info, LevelFilter};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -38,7 +39,7 @@ struct Cli {
     el_start: i32,
     #[arg(long, default_value = "70")]
     el_end: i32,
-    #[arg(long, default_value = "false")]
+    #[arg(long)]
     scan: bool,
 }
 
@@ -68,7 +69,7 @@ fn main_() -> Result<(), Box<dyn Error>> {
     let mut el_end = args.el_end.clamp(5, 70);
 
     // Connect to dish
-    let mut dish = DishController::new(&args.port, args.baudrate)?;
+    //let mut dish = DishSerialController::new(&args.port, args.baudrate)?;
 
     // dish.az_angle(160)?;
     // thread::sleep(Duration::from_secs(1));
@@ -77,10 +78,10 @@ fn main_() -> Result<(), Box<dyn Error>> {
 
     // dish.rfwatch(5)?;
 
-    loop {
-        println!("{:?}", dish.state.lock().unwrap());
-        thread::sleep(Duration::from_millis(1000));
-    }
+    // loop {
+    //     println!("{:?}", dish.state.lock().unwrap());
+    //     thread::sleep(Duration::from_millis(1000));
+    // }
 
     // // Perform scanning
     // if high_res == false {
@@ -228,24 +229,19 @@ use ratatui::{DefaultTerminal, Frame};
 
 pub enum MainChannelType {
     KeyEvent(KeyEvent),
+    DishCommand(dish_driver::DishCommand),
+    DishResponse(DishResponse),
     Update,
-}
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-enum InputMode {
-    #[default]
-    Normal,
-    Editing,
 }
 
 pub struct App {
     should_quit: bool,
-    dish: DishController,
+    dish: DishSerialController,
+    state: dish_controller::DishState,
     /// Current value of the input box
     input: Input,
-    input_mode: InputMode,
-    renderchan_sender: std::sync::mpsc::Sender<MainChannelType>,
-    renderchan_receiver: std::sync::mpsc::Receiver<MainChannelType>,
+    channel_tx: crossbeam::channel::Sender<MainChannelType>,
+    channel_rx: crossbeam::channel::Receiver<MainChannelType>,
 }
 
 impl App {
@@ -259,28 +255,28 @@ impl App {
         let mut el_start = args.el_start.clamp(5, 70);
         let mut el_end = args.el_end.clamp(5, 70);
 
-        let mut dish = DishController::new(&args.port, args.baudrate).unwrap();
+        let (tx, rx) = crossbeam::channel::unbounded();
+
+        let mut dish = DishSerialController::new(&args.port, args.baudrate, tx.clone()).unwrap();
 
         dish.send_command(dish_driver::DishCommand::Version)
             .unwrap();
 
-        std::thread::sleep(Duration::from_secs(2));
-
-        let (sender, receiver) = channel();
-
-        let chan_clone = sender.clone();
-        std::thread::spawn(move || loop {
-            chan_clone.send(MainChannelType::Update).unwrap();
-            std::thread::sleep(Duration::from_millis(100));
-        });
+        let state = DishState {
+            azimuth_count: 0,
+            azimuth_angle: 0.0,
+            elevation_count: 0,
+            elevation_angle: 0.0,
+            signal_strength: 0,
+        };
 
         Ok(Self {
             should_quit: false,
             dish,
+            state,
             input: Input::default(),
-            input_mode: InputMode::Normal,
-            renderchan_sender: sender,
-            renderchan_receiver: receiver,
+            channel_tx: tx,
+            channel_rx: rx,
         })
     }
 
@@ -289,11 +285,20 @@ impl App {
         self.handle_events()?;
 
         while !self.should_quit {
-            match self.renderchan_receiver.recv() {
+            match self.channel_rx.recv() {
                 Ok(MainChannelType::KeyEvent(key_event)) => {
                     self.handle_key_event(key_event);
                 }
                 Ok(MainChannelType::Update) => {}
+
+                Ok(MainChannelType::DishResponse(response)) => {
+                    self.state.update_from_response(response);
+                }
+
+                Ok(MainChannelType::DishCommand(command)) => {
+                    self.dish.send_command(command).unwrap();
+                }
+
                 Err(_) => {}
             }
             terminal.draw(|frame| self.draw(frame))?;
@@ -307,7 +312,7 @@ impl App {
     }
 
     fn handle_events(&mut self) -> io::Result<()> {
-        let sender_clone = self.renderchan_sender.clone();
+        let sender_clone = self.channel_tx.clone();
         std::thread::spawn(move || {
             loop {
                 match event::read().unwrap() {
@@ -363,11 +368,7 @@ impl Widget for &App {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let main_layout = Layout::default()
             .direction(Direction::Vertical)
-            .constraints(vec![
-                Constraint::Fill(1),
-                Constraint::Length(3),
-                Constraint::Length(3),
-            ])
+            .constraints(vec![Constraint::Fill(1), Constraint::Length(3)])
             .split(area);
 
         let upper_layout = Layout::default()
@@ -390,26 +391,23 @@ impl Widget for &App {
             //.state(self.selected_state())
             .render(upper_layout[0], buf);
 
-        {
-            let state = self.dish.state.lock().unwrap();
-            let state_text = vec![
-                Line::from("Port: "),
-                Line::from(state.serial_port.clone().yellow()),
-                Line::from("Azimuth (count): "),
-                Line::from(state.azimuth_count.to_string().yellow()),
-                Line::from("Elevation (count): "),
-                Line::from(state.elevation_count.to_string().yellow()),
-                Line::from("Azimuth: "),
-                Line::from(format!("{:.4}°", state.azimuth_angle).yellow()),
-                Line::from("Elevation: "),
-                Line::from(format!("{:.4}°", state.elevation_angle).yellow()),
-                Line::from("Signal: "),
-                Line::from(state.signal_strength.to_string().yellow()),
-            ];
-            Paragraph::new(state_text)
-                .block(Block::new())
-                .render(upper_layout[1], buf);
-        }
+        let state_text = vec![
+            Line::from("Port: "),
+            Line::from(self.dish.serial_port_name.clone().yellow()),
+            Line::from("Azimuth (count): "),
+            Line::from(self.state.azimuth_count.to_string().yellow()),
+            Line::from("Elevation (count): "),
+            Line::from(self.state.elevation_count.to_string().yellow()),
+            Line::from("Azimuth: "),
+            Line::from(format!("{:.4}°", self.state.azimuth_angle).yellow()),
+            Line::from("Elevation: "),
+            Line::from(format!("{:.4}°", self.state.elevation_angle).yellow()),
+            Line::from("Signal: "),
+            Line::from(self.state.signal_strength.to_string().yellow()),
+        ];
+        Paragraph::new(state_text)
+            .block(Block::new())
+            .render(upper_layout[1], buf);
 
         let bottom_instructions = vec![
             Line::from(vec![
@@ -432,12 +430,6 @@ impl Widget for &App {
 
         Paragraph::new(bottom_instructions)
             .block(Block::new())
-            .render(main_layout[2], buf);
-
-        let input = Paragraph::new(self.input.value())
-            //.style(style)
-            .scroll((0, 0))
-            .block(Block::bordered().title("Input"))
             .render(main_layout[1], buf);
     }
 }

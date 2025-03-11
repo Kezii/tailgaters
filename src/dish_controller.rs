@@ -8,11 +8,13 @@ use std::{
     time::Duration,
 };
 
-use crate::dish_driver::{DishCommand, DishResponse};
+use crate::{
+    dish_driver::{DishCommand, DishResponse},
+    MainChannelType,
+};
 
 #[derive(Debug)]
 pub struct DishState {
-    pub serial_port: String,
     pub azimuth_count: i32,
     pub azimuth_angle: f64,
     pub elevation_count: i32,
@@ -20,15 +22,49 @@ pub struct DishState {
     pub signal_strength: i32,
 }
 
-/// DishController: an abstraction for controlling the dish over serial.
-pub struct DishController {
-    serial_port: Box<dyn SerialPort>,
-    pub state: std::sync::Arc<std::sync::Mutex<DishState>>,
+impl DishState {
+    pub fn update_from_response(&mut self, response: DishResponse) {
+        match response {
+            DishResponse::Azimuth(az, az_angle) => {
+                self.azimuth_count = az;
+                self.azimuth_angle = az_angle;
+            }
+            DishResponse::Elevation(el) => {
+                self.elevation_count = el;
+                self.elevation_angle = Self::elevation_count_to_angle(el);
+            }
+            DishResponse::RfPower(rf) => {
+                self.signal_strength = rf;
+            }
+            DishResponse::Ver(_) => {}
+        }
+    }
+
+    pub fn elevation_angle_to_count(angle: f64) -> i32 {
+        let count = 334.0 + angle * (1487.0 - 334.0) / 70.0;
+        count as i32
+    }
+
+    pub fn elevation_count_to_angle(count: i32) -> f64 {
+        70.0 * (count as f64 - 334.0) / (1487.0 - 334.0)
+    }
 }
 
-impl DishController {
+/// DishController: an abstraction for controlling the dish over serial.
+pub struct DishSerialController {
+    serial_port: Box<dyn SerialPort>,
+    pub serial_port_name: String,
+    pub baudrate: u32,
+    pub mainchan_sender: crossbeam::channel::Sender<MainChannelType>,
+}
+
+impl DishSerialController {
     /// Create and connect the DishController, opening the specified serial port.
-    pub fn new(port_name: &str, baudrate: u32) -> Result<DishController, Box<dyn Error>> {
+    pub fn new(
+        port_name: &str,
+        baudrate: u32,
+        channel: crossbeam::channel::Sender<MainChannelType>,
+    ) -> Result<DishSerialController, Box<dyn Error>> {
         // Configure the serial port options
         let sp = serialport::new(port_name, baudrate)
             .data_bits(DataBits::Eight)
@@ -43,16 +79,11 @@ impl DishController {
             port_name, baudrate
         );
 
-        let mut res = DishController {
+        let mut res = DishSerialController {
             serial_port: sp,
-            state: std::sync::Arc::new(std::sync::Mutex::new(DishState {
-                serial_port: port_name.to_string(),
-                azimuth_count: 0,
-                azimuth_angle: 0.0,
-                elevation_count: 0,
-                elevation_angle: 0.0,
-                signal_strength: 0,
-            })),
+            mainchan_sender: channel,
+            serial_port_name: port_name.to_string(),
+            baudrate,
         };
 
         res.rx_thread();
@@ -61,25 +92,22 @@ impl DishController {
         Ok(res)
     }
 
-    pub fn try_clone(&self) -> Result<DishController, Box<dyn Error>> {
-        let sp = self.serial_port.try_clone()?;
-        Ok(DishController {
-            serial_port: sp,
-            state: self.state.clone(),
-        })
-    }
-
     fn tx_thread(&self) {
-        let mut selfclone = self.try_clone().unwrap();
+        let sender_clone = self.mainchan_sender.clone();
 
         thread::spawn(move || {
             loop {
                 // this thread just constantly asks for the azimuth and elevation
                 // response is handled by the rx_thread
-                if let Err(e) = selfclone.send_command(DishCommand::GetAzimuth) {
+
+                if let Err(e) =
+                    sender_clone.send(MainChannelType::DishCommand(DishCommand::GetAzimuth))
+                {
                     error!("{:?}", e);
                 }
-                if let Err(e) = selfclone.send_command(DishCommand::GetElevation) {
+                if let Err(e) =
+                    sender_clone.send(MainChannelType::DishCommand(DishCommand::GetElevation))
+                {
                     error!("{:?}", e);
                 }
 
@@ -88,13 +116,10 @@ impl DishController {
         });
     }
 
-    // Received: "Current heading:       3224 (160.192 deg.)\r\n"
-    // Received: "Current elevation: 1098\r\n"
-    // Received: "Current rfss:           \u{1b}[5D3142 \u{1b}[5D3142 \u{1b}[5D3141 \u{1b}[5D3141 \u{1b}[5D3142 \u{1b}[5D3140 \u{1b}[5D3140 \u{1b}[5D3140 \u{1b}[5D3140 \u{1b}[5D3141 \u{1b}[5D3140 \u{1b}[5D3140 \u{1b}[5D3141 \u{1b}[5D3140 \u{1b}[5D3141 \u{1b}[5D3141 \u{1b}[5D3140 \u{1b}[5D3142 \u{1b}[5D3140 \u{1b}[5D3141"
-
     fn rx_thread(&mut self) {
-        let state = self.state.clone();
         let rx_port = self.serial_port.try_clone().unwrap();
+
+        let sender = self.mainchan_sender.clone();
         thread::spawn(move || {
             let mut reader = BufReader::with_capacity(1, rx_port);
             let mut input_line = String::new();
@@ -107,27 +132,9 @@ impl DishController {
                         continue;
                     }
 
-                    let mut state = state.lock().unwrap();
-
                     let dish_response = DishResponse::parse(&input_line);
                     if let Some(dr) = dish_response {
-                        match dr {
-                            DishResponse::Azimuth(az, az_angle) => {
-                                state.azimuth_count = az;
-                                state.azimuth_angle = az_angle;
-                            }
-                            DishResponse::Elevation(el) => {
-                                state.elevation_count = el;
-                                state.elevation_angle =
-                                    DishController::elevation_count_to_angle(el);
-                            }
-                            DishResponse::Ver(ver) => {
-                                trace!("Version: {}", ver);
-                            }
-                            DishResponse::RfPower(rf) => {
-                                state.signal_strength = rf;
-                            }
-                        }
+                        sender.send(MainChannelType::DishResponse(dr));
                     }
 
                     input_line.clear();
@@ -136,28 +143,14 @@ impl DishController {
         });
     }
 
-    /// Sends a command string one character at a time, then a carriage return.
-    fn send_command_(&mut self, cmd_str: &str) -> Result<(), Box<dyn Error>> {
+    pub fn send_command(&mut self, command: DishCommand) -> Result<(), Box<dyn Error>> {
+        let cmd_str = command.serialize();
         for ch in cmd_str.chars() {
             self.serial_port.write_all(ch.to_string().as_bytes())?;
         }
         self.serial_port.write_all(b"\r")?;
         self.serial_port.flush()?;
+
         Ok(())
-    }
-
-    pub fn send_command(&mut self, command: DishCommand) -> Result<(), Box<dyn Error>> {
-        let cmd_str = command.serialize();
-        self.send_command_(&cmd_str)?;
-        Ok(())
-    }
-
-    pub fn elevation_angle_to_count(angle: f64) -> i32 {
-        let count = 334.0 + angle * (1487.0 - 334.0) / 70.0;
-        count as i32
-    }
-
-    pub fn elevation_count_to_angle(count: i32) -> f64 {
-        70.0 * (count as f64 - 334.0) / (1487.0 - 334.0)
     }
 }
