@@ -1,5 +1,4 @@
-use log::{error, info, trace};
-use regex::Regex;
+use log::{error, info};
 use serialport::{DataBits, FlowControl, Parity, SerialPort, StopBits};
 use std::{
     error::Error,
@@ -39,7 +38,7 @@ impl DishState {
             DishResponse::Ver(_) => {}
         }
     }
-
+    #[allow(dead_code)]
     pub fn elevation_angle_to_count(angle: f64) -> i32 {
         let count = 334.0 + angle * (1487.0 - 334.0) / 70.0;
         count as i32
@@ -54,7 +53,7 @@ impl DishState {
 pub struct DishSerialController {
     serial_port: Box<dyn SerialPort>,
     pub serial_port_name: String,
-    pub baudrate: u32,
+    pub _baudrate: u32,
     pub mainchan_sender: crossbeam::channel::Sender<GlobalBus>,
 }
 
@@ -83,7 +82,7 @@ impl DishSerialController {
             serial_port: sp,
             mainchan_sender: channel,
             serial_port_name: port_name.to_string(),
-            baudrate,
+            _baudrate: baudrate,
         };
 
         res.rx_thread();

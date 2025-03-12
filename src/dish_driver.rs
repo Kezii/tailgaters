@@ -1,4 +1,3 @@
-use log::info;
 use regex::Regex;
 #[derive(Debug, PartialEq)]
 pub enum DishCommand {

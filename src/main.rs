@@ -1,25 +1,16 @@
-use clap::{Arg, Args, Command, Parser};
+use clap::Parser;
 use dish_controller::{DishSerialController, DishState};
 use dish_driver::DishResponse;
 use log::{info, trace, warn, LevelFilter};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Style, Stylize};
-use ratatui::symbols::border;
-use ratatui::text::{Line, Text};
-use ratatui::widgets::{Block, Borders, Paragraph, Widget};
-use regex::Regex;
-use std::error::Error;
-use std::fs::{File, OpenOptions};
-use std::io::{self, Read, Write};
-use std::sync::mpsc::channel;
-use std::thread;
+use ratatui::text::Line;
+use ratatui::widgets::{Block, Paragraph, Widget};
+use std::fs::OpenOptions;
+use std::io::{self, Write};
 use std::time::Duration;
-use tui_input::Input;
 use tui_logger::{init_logger, set_default_level, TuiLoggerSmartWidget};
-
-// For image creation
-use image::{ImageBuffer, Rgb, RgbImage};
 
 mod dish_actions;
 mod dish_controller;
@@ -44,186 +35,6 @@ struct Cli {
     step: f64,
     #[arg(long)]
     scan: bool,
-}
-
-/// Writes a 2D array of i32 values to a text file, space-separated rows.
-fn write_raw_data(file_name: &str, data: &Vec<Vec<i32>>) -> Result<(), Box<dyn Error>> {
-    let mut file = File::create(file_name)?;
-    for row in data.iter() {
-        let row_str = row
-            .iter()
-            .map(|v| v.to_string())
-            .collect::<Vec<String>>()
-            .join(" ");
-        writeln!(file, "{}", row_str)?;
-    }
-    Ok(())
-}
-
-fn main_() -> Result<(), Box<dyn Error>> {
-    env_logger::init();
-
-    // Command-line argument parsing
-    let args = Cli::parse();
-
-    let mut az_start = args.az_start.clamp(0, 360);
-    let mut az_end = args.az_end.clamp(0, 360);
-    let mut el_start = args.el_start.clamp(5, 70);
-    let mut el_end = args.el_end.clamp(5, 70);
-
-    // Connect to dish
-    //let mut dish = DishSerialController::new(&args.port, args.baudrate)?;
-
-    // dish.az_angle(160)?;
-    // thread::sleep(Duration::from_secs(1));
-    // dish.version()?;
-    // thread::sleep(Duration::from_secs(2));
-
-    // dish.rfwatch(5)?;
-
-    // loop {
-    //     println!("{:?}", dish.state.lock().unwrap());
-    //     thread::sleep(Duration::from_millis(1000));
-    // }
-
-    // // Perform scanning
-    // if high_res == false {
-    //     // Low resolution (azangle, elangle)
-    //     let az_range = az_end - az_start;
-    //     let el_range = el_end - el_start;
-
-    //     // Provide runtime estimate
-    //     let time_est = az_range.abs() * el_range.abs();
-    //     let time_output = (time_est as f64 + (time_est as f64 / 6.0)) / 60.0;
-    //     if time_output > 60.0 {
-    //         println!("Estimated scan time: {:.2} hours", time_output / 60.0);
-    //     } else {
-    //         println!("Estimated scan time: {:.2} minutes", time_output);
-    //     }
-    //     println!("Starting low resolution scan...\n");
-
-    //     // Create image (width = az_range+1, height = el_range+1)
-    //     let width = (az_range.abs() + 1) as u32;
-    //     let height = (el_range.abs() + 1) as u32;
-    //     let mut img: RgbImage = ImageBuffer::new(width, height);
-
-    //     // 2D array for raw data
-    //     let mut sky_data = vec![vec![0i32; width as usize]; height as usize];
-
-    //     // Move dish to starting position
-    //     println!("Moving dish to starting position...");
-    //     dish.az_angle(az_start)?;
-    //     thread::sleep(Duration::from_secs(10));
-    //     dish.move_el_angle(el_start)?;
-    //     thread::sleep(Duration::from_secs(10));
-
-    //     // Scanning loops
-    //     for elevation in el_start..el_end {
-    //         for azimuth in az_start..az_end {
-    //             println!("Azimuth={}, Elevation={}", azimuth, elevation);
-    //             dish.az_angle(azimuth)?;
-
-    //             let strength = dish.read_signal_strength()?;
-    //             println!("Signal: {}", strength);
-
-    //             // Mirror the Python indexing:
-    //             let row_idx = (elevation - el_end).abs() as usize;
-    //             let col_idx = (azimuth - az_end).abs() as usize;
-
-    //             sky_data[row_idx][col_idx] = strength;
-
-    //             // Save data to text file each time
-    //             let raw_file_name = format!("raw-data.txt");
-    //             write_raw_data(&raw_file_name, &sky_data)?;
-
-    //             // Update image pixel
-    //             // Red channel is (strength % 255), green=0, blue=0
-    //             let red_val = (strength % 255) as u8;
-    //             img.put_pixel(col_idx as u32, row_idx as u32, Rgb([red_val, 0, 0]));
-
-    //             // Save updated PNG
-    //             let img_file_name = format!("result.png");
-    //             img.save(&img_file_name)?;
-
-    //             println!();
-    //         }
-    //         // Return to start azimuth
-    //         dish.az_angle(az_start)?;
-    //         // Delay based on range
-    //         let wait_time = ((az_range.abs() as f64) * 0.05) as u64 + 1;
-    //         thread::sleep(Duration::from_secs(wait_time));
-
-    //         // Move dish up one degree
-    //         // (Mirroring Python's "dish.move_el_angle(elevation)" after each row.)
-    //         dish.move_el_angle(elevation)?;
-    //     }
-    // } else {
-    //     // High resolution (nudge) ~0.2 deg az, 0.33 deg el
-    //     let az_range = (az_end - az_start).abs() * 5;
-    //     let el_range = (el_end - el_start).abs() * 3;
-
-    //     let time_est = az_range * el_range;
-    //     let time_output = ((time_est as f64 + (time_est as f64 / 6.0)) / 60.0)
-    //         + ((el_range as f64 * 10.0) / 60.0);
-    //     if time_output > 60.0 {
-    //         println!("Estimated scan time: {:.2} hours", time_output / 60.0);
-    //     } else {
-    //         println!("Estimated scan time: {:.2} minutes", time_output);
-    //     }
-    //     println!("Starting high resolution scan...\n");
-
-    //     // Create image
-    //     let width = az_range + 1;
-    //     let height = el_range + 1;
-    //     let mut img: RgbImage = ImageBuffer::new(width as u32, height as u32);
-
-    //     let mut sky_data = vec![vec![0i32; width as usize]; height as usize];
-
-    //     println!("Moving dish to starting position...");
-    //     dish.az_angle(az_start)?;
-    //     thread::sleep(Duration::from_secs(10));
-    //     dish.move_el_angle(el_start)?;
-    //     thread::sleep(Duration::from_secs(10));
-
-    //     // Scanning loops
-    //     for elevation in 0..el_range {
-    //         for azimuth in 0..az_range {
-    //             println!("X={}, Y={}", azimuth, elevation);
-
-    //             // Nudge az
-    //             dish.nudge_az_ccw()?;
-
-    //             let strength = dish.read_signal_strength()?;
-    //             println!("Signal: {}", strength);
-
-    //             let row_idx = (elevation as i32 - el_range as i32).abs() as usize;
-    //             let col_idx = (azimuth as i32 - az_range as i32).abs() as usize;
-    //             sky_data[row_idx][col_idx] = strength;
-
-    //             let raw_file_name = format!("raw-data.txt");
-    //             write_raw_data(&raw_file_name, &sky_data)?;
-
-    //             let red_val = (strength % 255) as u8;
-    //             img.put_pixel(col_idx as u32, row_idx as u32, Rgb([red_val, 0, 0]));
-
-    //             let img_file_name = format!("result.png");
-    //             img.save(&img_file_name)?;
-
-    //             println!();
-    //         }
-    //         // Return to starting azimuth
-    //         dish.az_angle(az_start)?;
-    //         let wait_time = (((az_range as f64) / 5.0) * 0.05) as u64 + 1;
-    //         thread::sleep(Duration::from_secs(wait_time));
-
-    //         // Nudge elevation
-    //         dish.nudge_el_up()?;
-    //     }
-    // }
-
-    println!("Scan complete!");
-
-    Ok(())
 }
 
 use color_eyre::Result;
@@ -251,22 +62,15 @@ pub struct App {
     should_quit: bool,
     dish: DishSerialController,
     state: std::sync::Arc<std::sync::RwLock<DishState>>,
-    /// Current value of the input box
-    input: Input,
     channel_tx: crossbeam::channel::Sender<GlobalBus>,
     channel_rx: crossbeam::channel::Receiver<GlobalBus>,
     //actions_list: Vec<dish_actions::DishAction>,
-    actions_sender: crossbeam::channel::Sender<dish_actions::DishAction>,
+    _actions_sender: crossbeam::channel::Sender<dish_actions::DishAction>,
     actions_receiver: crossbeam::channel::Receiver<dish_actions::DishAction>,
 }
 
-
 fn parse_cli_args() -> Result<(Cli, Vec<dish_actions::DishAction>)> {
     let args = Cli::parse();
-    let mut az_start = args.az_start.clamp(0, 360);
-    let mut az_end = args.az_end.clamp(0, 360);
-    let mut el_start = args.el_start.clamp(5, 70);
-    let mut el_end = args.el_end.clamp(5, 70);
 
     let mut actions_array = vec![];
 
@@ -274,12 +78,12 @@ fn parse_cli_args() -> Result<(Cli, Vec<dish_actions::DishAction>)> {
         actions_array.push(dish_actions::DishAction::Scan2d(
             dish_actions::Scan2DParams {
                 bottom_left: dish_actions::DishPosition {
-                    azimuth: az_start as f64,
-                    elevation: el_start as f64,
+                    azimuth: args.az_start as f64,
+                    elevation: args.el_start as f64,
                 },
                 top_right: dish_actions::DishPosition {
-                    azimuth: az_end as f64,
-                    elevation: el_end as f64,
+                    azimuth: args.az_end as f64,
+                    elevation: args.el_end as f64,
                 },
                 step: args.step,
             },
@@ -290,11 +94,10 @@ fn parse_cli_args() -> Result<(Cli, Vec<dish_actions::DishAction>)> {
 }
 
 impl App {
-    pub fn new(args: Cli, actions: Vec<dish_actions::DishAction>) -> Result<Self> {
+    fn new(args: Cli, actions: Vec<dish_actions::DishAction>) -> Result<Self> {
         init_logger(LevelFilter::Debug)?;
         set_default_level(LevelFilter::Debug);
         info!("Starting up...");
-
 
         let (tx, rx) = crossbeam::channel::unbounded();
 
@@ -302,7 +105,6 @@ impl App {
 
         dish.send_command(dish_driver::DishCommand::Version)
             .unwrap();
-
 
         std::thread::sleep(Duration::from_millis(1000));
 
@@ -317,22 +119,19 @@ impl App {
         let state = std::sync::Arc::new(std::sync::RwLock::new(state));
 
         let (actions_sender, actions_receiver) = crossbeam::channel::unbounded();
-        
+
         for action in actions {
             actions_sender.send(action).unwrap();
         }
 
-
-
         Ok(Self {
             should_quit: false,
             dish,
-            input: Input::default(),
             state,
             channel_tx: tx,
             channel_rx: rx,
             //actions_list,
-            actions_sender,
+            _actions_sender: actions_sender,
             actions_receiver,
         })
     }
@@ -447,10 +246,7 @@ impl App {
     fn start_actions_thread(&mut self) -> io::Result<()> {
         let recv_clone = self.actions_receiver.clone();
 
-        let actions = dish_actions::ActionManager::new(
-            self.channel_tx.clone(),
-            self.state.clone(),
-        );
+        let actions = dish_actions::ActionManager::new(self.channel_tx.clone(), self.state.clone());
 
         std::thread::spawn(move || loop {
             if let Ok(action) = recv_clone.recv() {
@@ -570,7 +366,6 @@ impl Widget for &App {
 }
 
 fn main() -> io::Result<()> {
-
     let (args, actions) = parse_cli_args().unwrap();
 
     color_eyre::install().unwrap();

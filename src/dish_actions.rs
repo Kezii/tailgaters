@@ -39,10 +39,7 @@ impl ActionManager {
         tx_channel: crossbeam::channel::Sender<GlobalBus>,
         state: Arc<std::sync::RwLock<DishState>>,
     ) -> ActionManager {
-        ActionManager {
-            tx_channel,
-            state,
-        }
+        ActionManager { tx_channel, state }
     }
 
     pub fn render(&self, action: DishAction) {
@@ -67,25 +64,13 @@ impl ActionManager {
                 self.set_position_blocking(az, el);
             }
             DishAction::Scan2d(params) => {
-                let mut az = params.bottom_left.azimuth;
-                let mut el = params.bottom_left.elevation;
-
-                // while az <= params.top_right.azimuth {
-                //     while el <= params.top_right.elevation {
-                //         self.set_position_blocking(az, el);
-                //         self.tx_channel
-                //             .send(GlobalBus::DishCommand(DishCommand::RfWatch(1)))
-                //             .unwrap();
-                //         std::thread::sleep(std::time::Duration::from_millis(1000));
-                //         el += params.step;
-                //     }
-                //     az += params.step;
-                // }
+                info!("Starting scan");
 
                 for az in (params.bottom_left.azimuth as i32..params.top_right.azimuth as i32)
                     .step_by(params.step as usize)
                 {
-                    for el in (params.bottom_left.elevation as i32..params.top_right.elevation as i32)
+                    for el in (params.bottom_left.elevation as i32
+                        ..params.top_right.elevation as i32)
                         .step_by(params.step as usize)
                     {
                         self.set_position_blocking(az as f64, el as f64);
@@ -138,7 +123,7 @@ impl ActionManager {
             .send(GlobalBus::DishCommand(DishCommand::SetElevationAngle(el)))
             .unwrap();
 
-        let mut now = std::time::Instant::now();
+        let now = std::time::Instant::now();
         while (self.state.read().unwrap().azimuth_angle - az).abs() > 2.0
             || (self.state.read().unwrap().elevation_angle - el).abs() > 2.0
         {
@@ -158,12 +143,5 @@ impl ActionManager {
         }
         info!("Set position to azimuth: {}, elevation: {}", az, el);
         std::thread::sleep(std::time::Duration::from_millis(100));
-
-    }
-
-    pub fn get_rf_power_blocking(&self) {
-        self.tx_channel
-            .send(GlobalBus::DishCommand(DishCommand::RfWatch(1)))
-            .unwrap();
     }
 }
