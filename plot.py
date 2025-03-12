@@ -67,7 +67,6 @@ def interpolate_and_plot(csv_file):
     plt.scatter(azimuths, elevations, marker=".")
     plt.xlabel("Azimuth")
     plt.ylabel("Elevation")
-    plt.title("Interpolated Power Heatmap")
 
     plt.draw()  # Update the plot
 
