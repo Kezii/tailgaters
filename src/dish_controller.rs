@@ -10,7 +10,7 @@ use std::{
 
 use crate::{
     dish_driver::{DishCommand, DishResponse},
-    MainCommand,
+    GlobalBus,
 };
 
 #[derive(Debug)]
@@ -55,7 +55,7 @@ pub struct DishSerialController {
     serial_port: Box<dyn SerialPort>,
     pub serial_port_name: String,
     pub baudrate: u32,
-    pub mainchan_sender: crossbeam::channel::Sender<MainCommand>,
+    pub mainchan_sender: crossbeam::channel::Sender<GlobalBus>,
 }
 
 impl DishSerialController {
@@ -63,7 +63,7 @@ impl DishSerialController {
     pub fn new(
         port_name: &str,
         baudrate: u32,
-        channel: crossbeam::channel::Sender<MainCommand>,
+        channel: crossbeam::channel::Sender<GlobalBus>,
     ) -> Result<DishSerialController, Box<dyn Error>> {
         // Configure the serial port options
         let sp = serialport::new(port_name, baudrate)
@@ -100,12 +100,12 @@ impl DishSerialController {
                 // this thread just constantly asks for the azimuth and elevation
                 // response is handled by the rx_thread
 
-                if let Err(e) = sender_clone.send(MainCommand::DishCommand(DishCommand::GetAzimuth))
+                if let Err(e) = sender_clone.send(GlobalBus::DishCommand(DishCommand::GetAzimuth))
                 {
                     error!("{:?}", e);
                 }
                 if let Err(e) =
-                    sender_clone.send(MainCommand::DishCommand(DishCommand::GetElevation))
+                    sender_clone.send(GlobalBus::DishCommand(DishCommand::GetElevation))
                 {
                     error!("{:?}", e);
                 }
@@ -133,7 +133,7 @@ impl DishSerialController {
 
                     let dish_response = DishResponse::parse(&input_line);
                     if let Some(dr) = dish_response {
-                        sender.send(MainCommand::DishResponse(dr)).unwrap();
+                        sender.send(GlobalBus::DishResponse(dr)).unwrap();
                     }
 
                     input_line.clear();

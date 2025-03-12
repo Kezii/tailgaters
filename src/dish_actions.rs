@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::{dish_controller::DishState, dish_driver::DishCommand, MainCommand};
+use crate::{dish_controller::DishState, dish_driver::DishCommand, GlobalBus};
 
 pub struct Sweep1DParams {
     pub start: i32,
@@ -19,15 +19,15 @@ pub enum DishAction {
 }
 
 pub struct ActionManager {
-    rx_channel: crossbeam::channel::Receiver<MainCommand>,
-    tx_channel: crossbeam::channel::Sender<MainCommand>,
+    rx_channel: crossbeam::channel::Receiver<GlobalBus>,
+    tx_channel: crossbeam::channel::Sender<GlobalBus>,
     state: std::sync::Arc<std::sync::Mutex<DishState>>,
 }
 
 impl ActionManager {
     pub fn new(
-        rx_channel: crossbeam::channel::Receiver<MainCommand>,
-        tx_channel: crossbeam::channel::Sender<MainCommand>,
+        rx_channel: crossbeam::channel::Receiver<GlobalBus>,
+        tx_channel: crossbeam::channel::Sender<GlobalBus>,
         state: Arc<std::sync::Mutex<DishState>>,
     ) -> ActionManager {
         ActionManager {
@@ -43,13 +43,13 @@ impl ActionManager {
                 let mut current = params.start;
                 while current <= params.end {
                     self.tx_channel
-                        .send(MainCommand::DishCommand(DishCommand::SetElevationAngle(
+                        .send(GlobalBus::DishCommand(DishCommand::SetElevationAngle(
                             current as f64,
                         )))
                         .unwrap();
                     std::thread::sleep(std::time::Duration::from_millis(100));
                     self.tx_channel
-                        .send(MainCommand::DishCommand(DishCommand::RfWatch(1)))
+                        .send(GlobalBus::DishCommand(DishCommand::RfWatch(1)))
                         .unwrap();
                     std::thread::sleep(std::time::Duration::from_millis(1000));
                     current += params.step;
@@ -63,7 +63,7 @@ impl ActionManager {
 
     pub fn set_azimuth_blocking(&self, angle: f64) {
         self.tx_channel
-            .send(MainCommand::DishCommand(DishCommand::SetAzimuthAngle(
+            .send(GlobalBus::DishCommand(DishCommand::SetAzimuthAngle(
                 angle,
             )))
             .unwrap();
@@ -75,7 +75,7 @@ impl ActionManager {
 
     pub fn set_elevation_blocking(&self, angle: f64) {
         self.tx_channel
-            .send(MainCommand::DishCommand(DishCommand::SetElevationAngle(
+            .send(GlobalBus::DishCommand(DishCommand::SetElevationAngle(
                 angle,
             )))
             .unwrap();
@@ -87,10 +87,10 @@ impl ActionManager {
 
     pub fn set_position_blocking(&self, az: f64, el: f64) {
         self.tx_channel
-            .send(MainCommand::DishCommand(DishCommand::SetAzimuthAngle(az)))
+            .send(GlobalBus::DishCommand(DishCommand::SetAzimuthAngle(az)))
             .unwrap();
         self.tx_channel
-            .send(MainCommand::DishCommand(DishCommand::SetElevationAngle(el)))
+            .send(GlobalBus::DishCommand(DishCommand::SetElevationAngle(el)))
             .unwrap();
 
         while (self.state.lock().unwrap().azimuth_angle - az).abs() > 0.1
@@ -102,7 +102,7 @@ impl ActionManager {
 
     pub fn get_rf_power_blocking(&self) {
         self.tx_channel
-            .send(MainCommand::DishCommand(DishCommand::RfWatch(1)))
+            .send(GlobalBus::DishCommand(DishCommand::RfWatch(1)))
             .unwrap();
     }
 }

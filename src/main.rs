@@ -237,8 +237,8 @@ pub struct RfPowerSample {
 }
 
 #[derive(Debug)]
-pub enum MainCommand {
-    KeyEvent(KeyEvent),
+pub enum GlobalBus {
+    KeyboardEvent(KeyEvent),
     DishCommand(dish_driver::DishCommand),
     DishResponse(DishResponse),
     RfPowerSample(RfPowerSample),
@@ -251,8 +251,8 @@ pub struct App {
     state: std::sync::Arc<std::sync::RwLock<DishState>>,
     /// Current value of the input box
     input: Input,
-    channel_tx: crossbeam::channel::Sender<MainCommand>,
-    channel_rx: crossbeam::channel::Receiver<MainCommand>,
+    channel_tx: crossbeam::channel::Sender<GlobalBus>,
+    channel_rx: crossbeam::channel::Receiver<GlobalBus>,
 }
 
 impl App {
@@ -299,12 +299,12 @@ impl App {
             let recv = self.channel_rx.recv();
             trace!("Received: {:?}", recv);
             match recv {
-                Ok(MainCommand::KeyEvent(key_event)) => {
+                Ok(GlobalBus::KeyboardEvent(key_event)) => {
                     self.handle_key_event(key_event);
                 }
-                Ok(MainCommand::Update) => {}
+                Ok(GlobalBus::Update) => {}
 
-                Ok(MainCommand::DishResponse(response)) => {
+                Ok(GlobalBus::DishResponse(response)) => {
                     self.state.write().unwrap().update_from_response(&response);
 
                     if let DishResponse::RfPower(pow) = response {
@@ -315,16 +315,16 @@ impl App {
                             time: std::time::Instant::now(),
                         };
                         self.channel_tx
-                            .send(MainCommand::RfPowerSample(rf_power_sample))
+                            .send(GlobalBus::RfPowerSample(rf_power_sample))
                             .unwrap();
                     }
                 }
 
-                Ok(MainCommand::DishCommand(command)) => {
+                Ok(GlobalBus::DishCommand(command)) => {
                     self.dish.send_command(command).unwrap();
                 }
 
-                Ok(MainCommand::RfPowerSample(power)) => {
+                Ok(GlobalBus::RfPowerSample(power)) => {
                     info!(
                         "Power: {}, Azimuth: {:.4}, Elevation: {:.4}",
                         power.power, power.azimuth, power.elevation
@@ -351,7 +351,7 @@ impl App {
                     // it's important to check that the event is a key press event as
                     // crossterm also emits key release and repeat events on Windows.
                     Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
-                        sender_clone.send(MainCommand::KeyEvent(key_event)).unwrap();
+                        sender_clone.send(GlobalBus::KeyboardEvent(key_event)).unwrap();
                     }
                     _ => {}
                 };
