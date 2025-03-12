@@ -1,7 +1,7 @@
 use clap::{Arg, Args, Command, Parser};
 use dish_controller::{DishSerialController, DishState};
 use dish_driver::DishResponse;
-use log::{info, LevelFilter};
+use log::{info, trace, LevelFilter};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Style, Stylize};
@@ -21,6 +21,7 @@ use tui_logger::{init_logger, set_default_level, TuiLoggerSmartWidget};
 // For image creation
 use image::{ImageBuffer, Rgb, RgbImage};
 
+mod dish_actions;
 mod dish_controller;
 mod dish_driver;
 
@@ -227,21 +228,31 @@ use color_eyre::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::{DefaultTerminal, Frame};
 
-pub enum MainChannelType {
+#[derive(Debug)]
+pub struct RfPowerSample {
+    pub power: i32,
+    pub azimuth: f64,
+    pub elevation: f64,
+    pub time: std::time::Instant,
+}
+
+#[derive(Debug)]
+pub enum MainCommand {
     KeyEvent(KeyEvent),
     DishCommand(dish_driver::DishCommand),
     DishResponse(DishResponse),
+    RfPowerSample(RfPowerSample),
     Update,
 }
 
 pub struct App {
     should_quit: bool,
     dish: DishSerialController,
-    state: dish_controller::DishState,
+    state: std::sync::Arc<std::sync::RwLock<DishState>>,
     /// Current value of the input box
     input: Input,
-    channel_tx: crossbeam::channel::Sender<MainChannelType>,
-    channel_rx: crossbeam::channel::Receiver<MainChannelType>,
+    channel_tx: crossbeam::channel::Sender<MainCommand>,
+    channel_rx: crossbeam::channel::Receiver<MainCommand>,
 }
 
 impl App {
@@ -273,7 +284,7 @@ impl App {
         Ok(Self {
             should_quit: false,
             dish,
-            state,
+            state: std::sync::Arc::new(std::sync::RwLock::new(state)),
             input: Input::default(),
             channel_tx: tx,
             channel_rx: rx,
@@ -282,21 +293,42 @@ impl App {
 
     /// runs the application's main loop until the user quits
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
-        self.handle_events()?;
+        self.start_keyboard_thread()?;
 
         while !self.should_quit {
-            match self.channel_rx.recv() {
-                Ok(MainChannelType::KeyEvent(key_event)) => {
+            let recv = self.channel_rx.recv();
+            trace!("Received: {:?}", recv);
+            match recv {
+                Ok(MainCommand::KeyEvent(key_event)) => {
                     self.handle_key_event(key_event);
                 }
-                Ok(MainChannelType::Update) => {}
+                Ok(MainCommand::Update) => {}
 
-                Ok(MainChannelType::DishResponse(response)) => {
-                    self.state.update_from_response(response);
+                Ok(MainCommand::DishResponse(response)) => {
+                    self.state.write().unwrap().update_from_response(&response);
+
+                    if let DishResponse::RfPower(pow) = response {
+                        let rf_power_sample = RfPowerSample {
+                            power: pow,
+                            azimuth: self.state.read().unwrap().azimuth_angle,
+                            elevation: self.state.read().unwrap().elevation_angle,
+                            time: std::time::Instant::now(),
+                        };
+                        self.channel_tx
+                            .send(MainCommand::RfPowerSample(rf_power_sample))
+                            .unwrap();
+                    }
                 }
 
-                Ok(MainChannelType::DishCommand(command)) => {
+                Ok(MainCommand::DishCommand(command)) => {
                     self.dish.send_command(command).unwrap();
+                }
+
+                Ok(MainCommand::RfPowerSample(power)) => {
+                    info!(
+                        "Power: {}, Azimuth: {:.4}, Elevation: {:.4}",
+                        power.power, power.azimuth, power.elevation
+                    );
                 }
 
                 Err(_) => {}
@@ -311,7 +343,7 @@ impl App {
         frame.render_widget(self, frame.area());
     }
 
-    fn handle_events(&mut self) -> io::Result<()> {
+    fn start_keyboard_thread(&mut self) -> io::Result<()> {
         let sender_clone = self.channel_tx.clone();
         std::thread::spawn(move || {
             loop {
@@ -319,9 +351,7 @@ impl App {
                     // it's important to check that the event is a key press event as
                     // crossterm also emits key release and repeat events on Windows.
                     Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
-                        sender_clone
-                            .send(MainChannelType::KeyEvent(key_event))
-                            .unwrap();
+                        sender_clone.send(MainCommand::KeyEvent(key_event)).unwrap();
                     }
                     _ => {}
                 };
@@ -391,23 +421,27 @@ impl Widget for &App {
             //.state(self.selected_state())
             .render(upper_layout[0], buf);
 
-        let state_text = vec![
-            Line::from("Port: "),
-            Line::from(self.dish.serial_port_name.clone().yellow()),
-            Line::from("Azimuth (count): "),
-            Line::from(self.state.azimuth_count.to_string().yellow()),
-            Line::from("Elevation (count): "),
-            Line::from(self.state.elevation_count.to_string().yellow()),
-            Line::from("Azimuth: "),
-            Line::from(format!("{:.4}°", self.state.azimuth_angle).yellow()),
-            Line::from("Elevation: "),
-            Line::from(format!("{:.4}°", self.state.elevation_angle).yellow()),
-            Line::from("Signal: "),
-            Line::from(self.state.signal_strength.to_string().yellow()),
-        ];
-        Paragraph::new(state_text)
-            .block(Block::new())
-            .render(upper_layout[1], buf);
+        {
+            let state = self.state.read().unwrap();
+
+            let state_text = vec![
+                Line::from("Port: "),
+                Line::from(self.dish.serial_port_name.clone().yellow()),
+                Line::from("Azimuth (count): "),
+                Line::from(state.azimuth_count.to_string().yellow()),
+                Line::from("Elevation (count): "),
+                Line::from(state.elevation_count.to_string().yellow()),
+                Line::from("Azimuth: "),
+                Line::from(format!("{:.4}°", state.azimuth_angle).yellow()),
+                Line::from("Elevation: "),
+                Line::from(format!("{:.4}°", state.elevation_angle).yellow()),
+                Line::from("Signal: "),
+                Line::from(state.signal_strength.to_string().yellow()),
+            ];
+            Paragraph::new(state_text)
+                .block(Block::new())
+                .render(upper_layout[1], buf);
+        }
 
         let bottom_instructions = vec![
             Line::from(vec![

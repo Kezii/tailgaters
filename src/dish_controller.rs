@@ -10,7 +10,7 @@ use std::{
 
 use crate::{
     dish_driver::{DishCommand, DishResponse},
-    MainChannelType,
+    MainCommand,
 };
 
 #[derive(Debug)]
@@ -23,18 +23,18 @@ pub struct DishState {
 }
 
 impl DishState {
-    pub fn update_from_response(&mut self, response: DishResponse) {
+    pub fn update_from_response(&mut self, response: &DishResponse) {
         match response {
             DishResponse::Azimuth(az, az_angle) => {
-                self.azimuth_count = az;
-                self.azimuth_angle = az_angle;
+                self.azimuth_count = *az;
+                self.azimuth_angle = *az_angle;
             }
             DishResponse::Elevation(el) => {
-                self.elevation_count = el;
-                self.elevation_angle = Self::elevation_count_to_angle(el);
+                self.elevation_count = *el;
+                self.elevation_angle = Self::elevation_count_to_angle(*el);
             }
             DishResponse::RfPower(rf) => {
-                self.signal_strength = rf;
+                self.signal_strength = *rf;
             }
             DishResponse::Ver(_) => {}
         }
@@ -55,7 +55,7 @@ pub struct DishSerialController {
     serial_port: Box<dyn SerialPort>,
     pub serial_port_name: String,
     pub baudrate: u32,
-    pub mainchan_sender: crossbeam::channel::Sender<MainChannelType>,
+    pub mainchan_sender: crossbeam::channel::Sender<MainCommand>,
 }
 
 impl DishSerialController {
@@ -63,7 +63,7 @@ impl DishSerialController {
     pub fn new(
         port_name: &str,
         baudrate: u32,
-        channel: crossbeam::channel::Sender<MainChannelType>,
+        channel: crossbeam::channel::Sender<MainCommand>,
     ) -> Result<DishSerialController, Box<dyn Error>> {
         // Configure the serial port options
         let sp = serialport::new(port_name, baudrate)
@@ -100,13 +100,12 @@ impl DishSerialController {
                 // this thread just constantly asks for the azimuth and elevation
                 // response is handled by the rx_thread
 
-                if let Err(e) =
-                    sender_clone.send(MainChannelType::DishCommand(DishCommand::GetAzimuth))
+                if let Err(e) = sender_clone.send(MainCommand::DishCommand(DishCommand::GetAzimuth))
                 {
                     error!("{:?}", e);
                 }
                 if let Err(e) =
-                    sender_clone.send(MainChannelType::DishCommand(DishCommand::GetElevation))
+                    sender_clone.send(MainCommand::DishCommand(DishCommand::GetElevation))
                 {
                     error!("{:?}", e);
                 }
@@ -134,7 +133,7 @@ impl DishSerialController {
 
                     let dish_response = DishResponse::parse(&input_line);
                     if let Some(dr) = dish_response {
-                        sender.send(MainChannelType::DishResponse(dr));
+                        sender.send(MainCommand::DishResponse(dr)).unwrap();
                     }
 
                     input_line.clear();

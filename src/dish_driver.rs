@@ -1,10 +1,10 @@
 use regex::Regex;
-
+#[derive(Debug, PartialEq)]
 pub enum DishCommand {
-    SetAzimuthAngle(i32),
+    SetAzimuthAngle(f64),
     GetAzimuth,
     GetElevation,
-    SetElevationAngle(i32),
+    SetElevationAngle(f64),
     NudgeAzimuthCcw,
     NudgeAzimuthCw,
     NudgeElevationUp,
@@ -63,10 +63,10 @@ impl DishCommand {
 }
 
 /*
-    // Received: "Current heading:       3224 (160.192 deg.)\r\n"
-    // Received: "Current elevation: 1098\r\n"
-    // Received: "Current rfss:           \u{1b}[5D3142 \u{1b}[5D3142 \u{1b}[5D3141 \u{1b}[5D3141 \u{1b}[5D3142 \u{1b}[5D3140 \u{1b}[5D3140 \u{1b}[5D3140 \u{1b}[5D3140 \u{1b}[5D3141 \u{1b}[5D3140 \u{1b}[5D3140 \u{1b}[5D3141 \u{1b}[5D3140 \u{1b}[5D3141 \u{1b}[5D3141 \u{1b}[5D3140 \u{1b}[5D3142 \u{1b}[5D3140 \u{1b}[5D3141"
-
+// Received: "Current heading:       3224 (160.192 deg.)\r\n"
+// Received: "Current elevation: 1098\r\n"
+// Received: "Current rfss:           \u{1b}[5D3142 \u{1b}[5D3142 \u{1b}[5D3141 \u{1b}[5D3141 \u{1b}[5D3142 \u{1b}[5D3140 \u{1b}[5D3140 \u{1b}[5D3140 \u{1b}[5D3140 \u{1b}[5D3141 \u{1b}[5D3140 \u{1b}[5D3140 \u{1b}[5D3141 \u{1b}[5D3140 \u{1b}[5D3141 \u{1b}[5D3141 \u{1b}[5D3140 \u{1b}[5D3142 \u{1b}[5D3140 \u{1b}[5D3141"
+// Received: "Stopped at Az: 3536"
 */
 
 impl DishResponse {
