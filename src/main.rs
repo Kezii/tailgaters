@@ -1,7 +1,7 @@
 use clap::{Arg, Args, Command, Parser};
 use dish_controller::{DishSerialController, DishState};
 use dish_driver::DishResponse;
-use log::{info, trace, LevelFilter};
+use log::{info, trace, warn, LevelFilter};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Style, Stylize};
@@ -40,6 +40,8 @@ struct Cli {
     el_start: i32,
     #[arg(long, default_value = "70")]
     el_end: i32,
+    #[arg(long, default_value = "1")]
+    step: f64,
     #[arg(long)]
     scan: bool,
 }
@@ -230,7 +232,7 @@ use ratatui::{DefaultTerminal, Frame};
 
 #[derive(Debug)]
 pub struct RfPowerSample {
-    pub power: i32,
+    pub power: f64,
     pub azimuth: f64,
     pub elevation: f64,
     pub time: std::time::Instant,
@@ -253,18 +255,46 @@ pub struct App {
     input: Input,
     channel_tx: crossbeam::channel::Sender<GlobalBus>,
     channel_rx: crossbeam::channel::Receiver<GlobalBus>,
+    //actions_list: Vec<dish_actions::DishAction>,
+    actions_sender: crossbeam::channel::Sender<dish_actions::DishAction>,
+    actions_receiver: crossbeam::channel::Receiver<dish_actions::DishAction>,
+}
+
+
+fn parse_cli_args() -> Result<(Cli, Vec<dish_actions::DishAction>)> {
+    let args = Cli::parse();
+    let mut az_start = args.az_start.clamp(0, 360);
+    let mut az_end = args.az_end.clamp(0, 360);
+    let mut el_start = args.el_start.clamp(5, 70);
+    let mut el_end = args.el_end.clamp(5, 70);
+
+    let mut actions_array = vec![];
+
+    if args.scan {
+        actions_array.push(dish_actions::DishAction::Scan2d(
+            dish_actions::Scan2DParams {
+                bottom_left: dish_actions::DishPosition {
+                    azimuth: az_start as f64,
+                    elevation: el_start as f64,
+                },
+                top_right: dish_actions::DishPosition {
+                    azimuth: az_end as f64,
+                    elevation: el_end as f64,
+                },
+                step: args.step,
+            },
+        ));
+    }
+
+    Ok((args, actions_array))
 }
 
 impl App {
-    pub fn new() -> Result<Self> {
+    pub fn new(args: Cli, actions: Vec<dish_actions::DishAction>) -> Result<Self> {
         init_logger(LevelFilter::Debug)?;
         set_default_level(LevelFilter::Debug);
         info!("Starting up...");
-        let args = Cli::parse();
-        let mut az_start = args.az_start.clamp(0, 360);
-        let mut az_end = args.az_end.clamp(0, 360);
-        let mut el_start = args.el_start.clamp(5, 70);
-        let mut el_end = args.el_end.clamp(5, 70);
+
 
         let (tx, rx) = crossbeam::channel::unbounded();
 
@@ -273,27 +303,50 @@ impl App {
         dish.send_command(dish_driver::DishCommand::Version)
             .unwrap();
 
+
+        std::thread::sleep(Duration::from_millis(1000));
+
         let state = DishState {
             azimuth_count: 0,
             azimuth_angle: 0.0,
             elevation_count: 0,
             elevation_angle: 0.0,
-            signal_strength: 0,
+            signal_strength: 0.0,
         };
+
+        let state = std::sync::Arc::new(std::sync::RwLock::new(state));
+
+        let (actions_sender, actions_receiver) = crossbeam::channel::unbounded();
+        
+        for action in actions {
+            actions_sender.send(action).unwrap();
+        }
+
+
 
         Ok(Self {
             should_quit: false,
             dish,
-            state: std::sync::Arc::new(std::sync::RwLock::new(state)),
             input: Input::default(),
+            state,
             channel_tx: tx,
             channel_rx: rx,
+            //actions_list,
+            actions_sender,
+            actions_receiver,
         })
     }
 
     /// runs the application's main loop until the user quits
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
         self.start_keyboard_thread()?;
+        self.start_actions_thread()?;
+
+        let start_time_string = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            .to_string();
 
         while !self.should_quit {
             let recv = self.channel_rx.recv();
@@ -329,6 +382,34 @@ impl App {
                         "Power: {}, Azimuth: {:.4}, Elevation: {:.4}",
                         power.power, power.azimuth, power.elevation
                     );
+
+                    if power.power > 5000.0 {
+                        warn!("what the hell? power is too high");
+
+                        self.dish
+                            .send_command(dish_driver::DishCommand::RfWatch(1))
+                            .unwrap();
+
+                        std::thread::sleep(Duration::from_secs(1));
+
+                        continue;
+                    }
+
+                    let mut file = OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(format!("rf_power_{}.csv", start_time_string))
+                        .unwrap();
+
+                    writeln!(
+                        file,
+                        "{},{},{},{}",
+                        power.time.elapsed().as_secs(),
+                        power.power,
+                        power.azimuth,
+                        power.elevation
+                    )
+                    .unwrap();
                 }
 
                 Err(_) => {}
@@ -351,10 +432,30 @@ impl App {
                     // it's important to check that the event is a key press event as
                     // crossterm also emits key release and repeat events on Windows.
                     Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
-                        sender_clone.send(GlobalBus::KeyboardEvent(key_event)).unwrap();
+                        sender_clone
+                            .send(GlobalBus::KeyboardEvent(key_event))
+                            .unwrap();
                     }
                     _ => {}
                 };
+            }
+        });
+
+        Ok(())
+    }
+
+    fn start_actions_thread(&mut self) -> io::Result<()> {
+        let recv_clone = self.actions_receiver.clone();
+
+        let actions = dish_actions::ActionManager::new(
+            self.channel_tx.clone(),
+            self.state.clone(),
+        );
+
+        std::thread::spawn(move || loop {
+            if let Ok(action) = recv_clone.recv() {
+                info!("Executing action: {:#?}", action);
+                actions.render(action);
             }
         });
 
@@ -469,9 +570,12 @@ impl Widget for &App {
 }
 
 fn main() -> io::Result<()> {
+
+    let (args, actions) = parse_cli_args().unwrap();
+
     color_eyre::install().unwrap();
     let mut terminal = ratatui::init();
-    let mut app = App::new().unwrap();
+    let mut app = App::new(args, actions).unwrap();
     let app_result = app.run(&mut terminal);
     ratatui::restore();
     app_result

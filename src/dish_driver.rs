@@ -1,3 +1,4 @@
+use log::info;
 use regex::Regex;
 #[derive(Debug, PartialEq)]
 pub enum DishCommand {
@@ -17,7 +18,7 @@ pub enum DishCommand {
 pub enum DishResponse {
     Azimuth(i32, f64),
     Elevation(i32),
-    RfPower(i32),
+    RfPower(f64),
     Ver(String),
 }
 
@@ -76,7 +77,7 @@ impl DishResponse {
 
         match line {
             s if s.starts_with("Current heading:") => {
-                let az = parts[2].parse::<i32>().unwrap();
+                let az = parts[2].parse::<i32>().ok()?;
                 let az_angle = parts[3]
                     .trim_start_matches('(')
                     .parse::<f64>()
@@ -84,7 +85,7 @@ impl DishResponse {
                 Some(DishResponse::Azimuth(az, az_angle))
             }
             s if s.starts_with("Current elevation:") => {
-                let el = parts[2].parse::<i32>().unwrap();
+                let el = parts[2].parse::<i32>().ok()?;
                 Some(DishResponse::Elevation(el))
             }
             s if s.starts_with("Current rfss:") => {
@@ -100,11 +101,11 @@ impl DishResponse {
                     let cleaned = re_non_digits.replace_all(&cleaned, "");
                     let cleaned = cleaned.trim();
 
-                    cleaned.parse::<i32>().unwrap()
+                    cleaned.parse::<i32>().ok().unwrap()
                 });
 
                 let average = parts_clean.fold((0, 0), |(sum, count), val| (sum + val, count + 1));
-                Some(DishResponse::RfPower(average.0 / average.1))
+                Some(DishResponse::RfPower(average.0 as f64 / average.1 as f64))
             }
             s if s.starts_with("GO>") => None,
             "azacc" | "elacc" => None,
@@ -129,6 +130,6 @@ mod tests {
 
         let line = "Current rfss:           \u{1b}[5D3142 \u{1b}[5D3142 \u{1b}[5D3141 \u{1b}[5D3141 \u{1b}[5D3142";
         let response = DishResponse::parse(line).unwrap();
-        assert_eq!(response, DishResponse::RfPower(3141));
+        assert_eq!(response, DishResponse::RfPower(3141.6));
     }
 }

@@ -1,37 +1,45 @@
 use std::sync::Arc;
 
+use log::{info, warn};
+
 use crate::{dish_controller::DishState, dish_driver::DishCommand, GlobalBus};
 
+#[derive(Debug)]
 pub struct Sweep1DParams {
     pub start: i32,
     pub end: i32,
     pub step: i32,
 }
-
+#[derive(Debug)]
+pub struct Scan2DParams {
+    pub bottom_left: DishPosition,
+    pub top_right: DishPosition,
+    pub step: f64,
+}
+#[derive(Debug)]
 pub struct DishPosition {
-    pub azimuth_count: i32,
-    pub elevation_count: i32,
+    pub azimuth: f64,
+    pub elevation: f64,
 }
 
+#[derive(Debug)]
 pub enum DishAction {
     ElevationSweep(Sweep1DParams),
+    Scan2d(Scan2DParams),
     MoveAngles(f64, f64),
 }
 
 pub struct ActionManager {
-    rx_channel: crossbeam::channel::Receiver<GlobalBus>,
     tx_channel: crossbeam::channel::Sender<GlobalBus>,
-    state: std::sync::Arc<std::sync::Mutex<DishState>>,
+    state: std::sync::Arc<std::sync::RwLock<DishState>>,
 }
 
 impl ActionManager {
     pub fn new(
-        rx_channel: crossbeam::channel::Receiver<GlobalBus>,
         tx_channel: crossbeam::channel::Sender<GlobalBus>,
-        state: Arc<std::sync::Mutex<DishState>>,
+        state: Arc<std::sync::RwLock<DishState>>,
     ) -> ActionManager {
         ActionManager {
-            rx_channel,
             tx_channel,
             state,
         }
@@ -58,17 +66,54 @@ impl ActionManager {
             DishAction::MoveAngles(az, el) => {
                 self.set_position_blocking(az, el);
             }
+            DishAction::Scan2d(params) => {
+                let mut az = params.bottom_left.azimuth;
+                let mut el = params.bottom_left.elevation;
+
+                // while az <= params.top_right.azimuth {
+                //     while el <= params.top_right.elevation {
+                //         self.set_position_blocking(az, el);
+                //         self.tx_channel
+                //             .send(GlobalBus::DishCommand(DishCommand::RfWatch(1)))
+                //             .unwrap();
+                //         std::thread::sleep(std::time::Duration::from_millis(1000));
+                //         el += params.step;
+                //     }
+                //     az += params.step;
+                // }
+
+                for az in (params.bottom_left.azimuth as i32..params.top_right.azimuth as i32)
+                    .step_by(params.step as usize)
+                {
+                    for el in (params.bottom_left.elevation as i32..params.top_right.elevation as i32)
+                        .step_by(params.step as usize)
+                    {
+                        self.set_position_blocking(az as f64, el as f64);
+                        self.tx_channel
+                            .send(GlobalBus::DishCommand(DishCommand::RfWatch(1)))
+                            .unwrap();
+                        std::thread::sleep(std::time::Duration::from_millis(1000));
+                    }
+                }
+
+                info!("Scan finished!!");
+
+                self.set_position_blocking(
+                    params.bottom_left.azimuth,
+                    params.bottom_left.elevation,
+                );
+
+                info!("Exiting scan");
+            }
         }
     }
 
     pub fn set_azimuth_blocking(&self, angle: f64) {
         self.tx_channel
-            .send(GlobalBus::DishCommand(DishCommand::SetAzimuthAngle(
-                angle,
-            )))
+            .send(GlobalBus::DishCommand(DishCommand::SetAzimuthAngle(angle)))
             .unwrap();
 
-        while (self.state.lock().unwrap().azimuth_angle - angle).abs() > 0.1 {
+        while (self.state.read().unwrap().azimuth_angle - angle).abs() > 0.1 {
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
     }
@@ -80,7 +125,7 @@ impl ActionManager {
             )))
             .unwrap();
 
-        while (self.state.lock().unwrap().elevation_angle - angle).abs() > 0.1 {
+        while (self.state.read().unwrap().elevation_angle - angle).abs() > 0.1 {
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
     }
@@ -93,11 +138,27 @@ impl ActionManager {
             .send(GlobalBus::DishCommand(DishCommand::SetElevationAngle(el)))
             .unwrap();
 
-        while (self.state.lock().unwrap().azimuth_angle - az).abs() > 0.1
-            || (self.state.lock().unwrap().elevation_angle - el).abs() > 0.1
+        let mut now = std::time::Instant::now();
+        while (self.state.read().unwrap().azimuth_angle - az).abs() > 2.0
+            || (self.state.read().unwrap().elevation_angle - el).abs() > 2.0
         {
             std::thread::sleep(std::time::Duration::from_millis(100));
+            if now.elapsed().as_secs() > 15 {
+                warn!("Timeout while setting position, position will be imprecise");
+                // try again
+                self.tx_channel
+                    .send(GlobalBus::DishCommand(DishCommand::SetAzimuthAngle(az)))
+                    .unwrap();
+                self.tx_channel
+                    .send(GlobalBus::DishCommand(DishCommand::SetElevationAngle(el)))
+                    .unwrap();
+
+                break;
+            }
         }
+        info!("Set position to azimuth: {}, elevation: {}", az, el);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
     }
 
     pub fn get_rf_power_blocking(&self) {

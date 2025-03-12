@@ -19,7 +19,7 @@ pub struct DishState {
     pub azimuth_angle: f64,
     pub elevation_count: i32,
     pub elevation_angle: f64,
-    pub signal_strength: i32,
+    pub signal_strength: f64,
 }
 
 impl DishState {
@@ -100,12 +100,10 @@ impl DishSerialController {
                 // this thread just constantly asks for the azimuth and elevation
                 // response is handled by the rx_thread
 
-                if let Err(e) = sender_clone.send(GlobalBus::DishCommand(DishCommand::GetAzimuth))
-                {
+                if let Err(e) = sender_clone.send(GlobalBus::DishCommand(DishCommand::GetAzimuth)) {
                     error!("{:?}", e);
                 }
-                if let Err(e) =
-                    sender_clone.send(GlobalBus::DishCommand(DishCommand::GetElevation))
+                if let Err(e) = sender_clone.send(GlobalBus::DishCommand(DishCommand::GetElevation))
                 {
                     error!("{:?}", e);
                 }
